@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         solver.set_dfs(false);
     }
 
-    let sol = solver.solve(&puzzle)?;
+    let sol = solver.solve()?;
     print_solution(&sol);
 
     Ok(())

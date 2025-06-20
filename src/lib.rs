@@ -294,13 +294,13 @@ impl Solver {
         self.dfs = dfs;
     }
 
-    pub fn solve(&mut self, puz: &Puzzle) -> Result<Solution, SolverError> {
-        self.solve_internal(puz, Solution::new(puz.cols.len(), puz.rows.len()))
+    pub fn solve(&mut self) -> Result<Solution, SolverError> {
+        self.solve_internal(Solution::new(self.col_runs.len(), self.row_runs.len()))
     }
 
-    fn solve_internal(&mut self, puz: &Puzzle, mut sol: Solution) -> Result<Solution, SolverError> {
+    fn solve_internal(&mut self, mut sol: Solution) -> Result<Solution, SolverError> {
         loop {
-            if !self.solve_step(puz, &mut sol)? {
+            if !self.solve_step(&mut sol)? {
                 break;
             }
         }
@@ -314,7 +314,7 @@ impl Solver {
         } else {
             0
         };
-        if puz.rows[row].len() <= index {
+        if self.row_runs[row].len() <= index {
             row += 1;
             index = 0;
         }
@@ -335,7 +335,7 @@ impl Solver {
             new_run.start = run_start;
             new_run.end = run_end;
 
-            sol = Solution::new(puz.cols.len(), puz.rows.len());
+            sol = Solution::new(self.col_runs.len(), self.row_runs.len());
 
             // Update all cells in the run region
             for i in run_start..=run_end {
@@ -350,7 +350,7 @@ impl Solver {
                 continue;
             }
 
-            let res = solver.solve_internal(puz, sol);
+            let res = solver.solve_internal(sol);
             if res.is_ok() {
                 return res;
             }
@@ -359,10 +359,10 @@ impl Solver {
         Err(SolverError::NoSolution)
     }
 
-    fn solve_step(&mut self, puz: &Puzzle, sol: &mut Solution) -> Result<bool, SolverError> {
+    fn solve_step(&mut self, sol: &mut Solution) -> Result<bool, SolverError> {
         let mut progress = false;
-        let height = puz.rows.len();
-        let width = puz.cols.len();
+        let height = self.row_runs.len();
+        let width = self.col_runs.len();
 
         // ======================
         // ======== ROWS ========
