@@ -26,15 +26,15 @@ fn main() -> Result<()> {
     }
 
     let sol = solver.solve()?;
-    print_solution(&sol);
+    print_solution(&sol, puzzle.width());
 
     Ok(())
 }
 
-fn print_solution(sol: &Solution) {
+fn print_solution(sol: &Solution, width: usize) {
     let line = {
-        let mut buf = String::with_capacity(sol.width);
-        for j in 0..sol.width {
+        let mut buf = String::with_capacity(width);
+        for j in 0..width {
             if j % 5 == 0 {
                 buf.push('+');
             }

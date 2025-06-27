@@ -1,7 +1,7 @@
 use std::io;
 use std::iter::StepBy;
 use std::num::ParseIntError;
-use std::ops::RangeInclusive;
+use std::ops::{Deref, DerefMut, Range};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PuzzleError {
@@ -50,6 +50,16 @@ impl Puzzle {
 
         Ok(Self { rows, cols })
     }
+
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.cols.len()
+    }
+
+    #[inline]
+    pub fn height(&self) -> usize {
+        self.rows.len()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,9 +80,10 @@ pub enum Cell {
 
 #[derive(Debug, Clone)]
 pub struct Solution {
-    pub width: usize,
-    pub height: usize,
-    pub cells: Vec<Cell>,
+    width: usize,
+    height: usize,
+    h_cells: Vec<Cell>,
+    v_cells: Vec<Cell>,
 }
 
 impl Solution {
@@ -80,7 +91,8 @@ impl Solution {
         Self {
             width,
             height,
-            cells: vec![Cell::Unknown; width * height],
+            h_cells: vec![Cell::Unknown; width * height],
+            v_cells: vec![Cell::Unknown; height * width],
         }
     }
 
@@ -90,9 +102,10 @@ impl Solution {
         }
 
         let index = row * self.width + col;
-        let data = &mut self.cells[index];
+        let data = &mut self.h_cells[index];
         if *data == Cell::Unknown {
             *data = cell;
+            self.v_cells[col * self.height + row] = cell;
             Ok(true)
         } else if *data == cell {
             Ok(false)
@@ -102,7 +115,7 @@ impl Solution {
     }
 
     fn filled(&self) -> bool {
-        self.cells.iter().all(|&c| c != Cell::Unknown)
+        self.h_cells.iter().all(|&c| c != Cell::Unknown)
     }
 
     pub fn check(&self, puz: &Puzzle) -> bool {
@@ -111,7 +124,7 @@ impl Solution {
             let mut col = 0;
             for i in 0..puz.rows[row].len() {
                 // Ignore leading empty spaces
-                while col < self.width && self.cells[row * self.width + col] == Cell::Empty {
+                while col < self.width && self.h_cells[row * self.width + col] == Cell::Empty {
                     col += 1;
                 }
 
@@ -120,7 +133,7 @@ impl Solution {
                     if self.width <= col {
                         return false;
                     }
-                    if self.cells[row * self.width + col] != Cell::Filled {
+                    if self.h_cells[row * self.width + col] != Cell::Filled {
                         return false;
                     }
                     col += 1;
@@ -129,7 +142,7 @@ impl Solution {
 
             // Check trailing empty spaces
             while col < self.width {
-                if self.cells[row * self.width + col] != Cell::Empty {
+                if self.h_cells[row * self.width + col] != Cell::Empty {
                     return false;
                 }
                 col += 1;
@@ -141,7 +154,7 @@ impl Solution {
             let mut row = 0usize;
             for i in 0..puz.cols[col].len() {
                 // Ignore leading empty spaces
-                while row < self.height && self.cells[row * self.width + col] == Cell::Empty {
+                while row < self.height && self.h_cells[row * self.width + col] == Cell::Empty {
                     row += 1;
                 }
 
@@ -150,7 +163,7 @@ impl Solution {
                     if self.height <= row {
                         return false;
                     }
-                    if self.cells[row * self.width + col] != Cell::Filled {
+                    if self.h_cells[row * self.width + col] != Cell::Filled {
                         return false;
                     }
                     row += 1;
@@ -159,7 +172,7 @@ impl Solution {
 
             // Check trailing empty spaces
             while row < self.height {
-                if self.cells[row * self.width + col] != Cell::Empty {
+                if self.h_cells[row * self.width + col] != Cell::Empty {
                     return false;
                 }
                 row += 1;
@@ -170,32 +183,35 @@ impl Solution {
     }
 
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
-        RowIterator {
-            slice: self.cells.as_slice(),
-            lower: 0,
-            step: (self.width..=self.width * self.height).step_by(self.width),
+        SliceIterator::new(self.h_cells.as_slice(), self.width)
+    }
+
+    pub fn columns(&self) -> impl Iterator<Item = &[Cell]> {
+        SliceIterator::new(self.v_cells.as_slice(), self.height)
+    }
+}
+
+pub struct SliceIterator<'a> {
+    slice: &'a [Cell],
+    step: usize,
+    pos: StepBy<Range<usize>>,
+}
+
+impl<'a> SliceIterator<'a> {
+    fn new(slice: &'a [Cell], step: usize) -> Self {
+        Self {
+            slice,
+            step,
+            pos: (0..slice.len()).step_by(step),
         }
     }
 }
 
-struct RowIterator<'a> {
-    slice: &'a [Cell],
-    lower: usize,
-    step: StepBy<RangeInclusive<usize>>,
-}
-
-impl<'a> Iterator for RowIterator<'a> {
+impl<'a> Iterator for SliceIterator<'a> {
     type Item = &'a [Cell];
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.step.next() {
-            None => None,
-            Some(upper) => {
-                let lower = self.lower;
-                self.lower = upper;
-                Some(&self.slice[lower..upper])
-            }
-        }
+        self.pos.next().map(|pos| &self.slice[pos..pos + self.step])
     }
 }
 
@@ -230,10 +246,525 @@ impl Run {
     }
 }
 
+#[repr(transparent)]
+struct Cells(Vec<Cell>);
+
+impl Cells {
+    fn set(&mut self, index: usize, cell: Cell) -> Result<bool, SolverError> {
+        if self.0.len() <= index {
+            return Ok(false);
+        }
+
+        let data = &mut self.0[index];
+        if *data == Cell::Unknown {
+            *data = cell;
+            Ok(true)
+        } else if *data == cell {
+            Ok(false)
+        } else {
+            Err(SolverError::Conflict)
+        }
+    }
+}
+
+impl Deref for Cells {
+    type Target = [Cell];
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for Cells {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Line {
+    index: usize,
+    runs: Vec<Run>,
+    solved: bool,
+}
+
+impl Line {
+    fn new(index: usize, width: usize, clues: &[usize]) -> Self {
+        let size = clues.len();
+        let mut runs = vec![Run::default(); size];
+
+        runs[0].start = 0;
+        runs[size - 1].end = width - 1;
+
+        // Initialize starting point for each run
+        let mut start = clues[0] + 1;
+        for j in 1..size {
+            runs[j].start = start;
+            start += clues[j] + 1;
+        }
+
+        // Initialize ending point for each run
+        let mut end = if clues[size - 1] < width - 1 {
+            width - clues[size - 1] - 2
+        } else {
+            width
+        };
+        for j in (0..size - 1).rev() {
+            runs[j].end = end;
+            end -= clues[j] - 1;
+        }
+
+        for j in 0..size {
+            runs[j].len = clues[j];
+        }
+
+        Self {
+            index,
+            runs,
+            solved: false,
+        }
+    }
+
+    fn is_solved(&self, cells: &[Cell]) -> bool {
+        let mut pos = 0;
+        let len = cells.len();
+
+        for run in &self.runs {
+            // Ignore leading empty spaces
+            while pos < len && cells[pos] == Cell::Empty {
+                pos += 1;
+            }
+
+            for _ in 0..run.len {
+                // Out of bounds
+                if len <= pos {
+                    return false;
+                }
+
+                if cells[pos] != Cell::Filled {
+                    return false;
+                }
+
+                pos += 1;
+            }
+        }
+
+        // Check trailing empty spaces
+        while pos < len {
+            if cells[pos] != Cell::Empty {
+                return false;
+            }
+
+            pos += 1;
+        }
+
+        true
+    }
+
+    fn solve(&mut self, cells: &mut Cells) -> Result<bool, SolverError> {
+        let mut progress = false;
+        let line_len = cells.len();
+        let run_len = self.runs.len();
+
+        // ---- PART 1 ----
+        // Rule 1.1
+        for &Run { start, end, len } in self.runs.iter() {
+            for k in end + 1 - len..start + len {
+                if cells.set(k, Cell::Filled)? {
+                    progress = true;
+                }
+            }
+        }
+
+        // Rule 1.2
+        let first_start = self.runs[0].start;
+        let last_end = self.runs[run_len - 1].end;
+        for j in 0..line_len {
+            if (j < first_start || last_end < j) && cells.set(j, Cell::Empty)? {
+                progress = true;
+            }
+        }
+        for j in 0..run_len - 1 {
+            let current_end = self.runs[j].end;
+            let next_start = self.runs[j + 1].start;
+            for k in current_end + 1..next_start {
+                if cells.set(k, Cell::Empty)? {
+                    progress = true;
+                }
+            }
+        }
+
+        // Rule 1.3
+        for (
+            j,
+            &Run {
+                start: cur_start,
+                end: cur_end,
+                ..
+            },
+        ) in self.runs.iter().enumerate()
+        {
+            if 1 <= cur_start && cells[cur_start] == Cell::Filled {
+                let length1 = self.runs.iter().take(j).all(|&Run { start, end, len }| {
+                    cur_start < start || end < cur_start || len == 1
+                });
+                if length1 && cells.set(cur_start - 1, Cell::Empty)? {
+                    progress = true;
+                }
+            }
+
+            if cur_end + 1 < line_len && cells[cur_end] == Cell::Filled {
+                let length1 = self
+                    .runs
+                    .iter()
+                    .skip(j + 1)
+                    .all(|&Run { start, end, len }| cur_end < start || end < cur_end || len == 1);
+                if length1 && cells.set(cur_end + 1, Cell::Empty)? {
+                    progress = true;
+                }
+            }
+        }
+
+        // Rule 1.4
+        for j in 1..line_len - 1 {
+            if cells[j - 1] == Cell::Filled
+                && cells[j] == Cell::Unknown
+                && cells[j + 1] == Cell::Filled
+            {
+                let mut new_len = 1;
+                for &cell in cells.iter().take(j).rev() {
+                    if cell != Cell::Filled {
+                        break;
+                    }
+                    new_len += 1;
+                }
+                for &cell in cells.iter().take(line_len).skip(j + 1) {
+                    if cell != Cell::Filled {
+                        break;
+                    }
+                    new_len += 1;
+                }
+
+                let mut max_len = 0;
+                for &Run { start, end, len } in self.runs.iter() {
+                    if start < j && j < end && max_len < len {
+                        max_len = len;
+                    }
+                }
+
+                if max_len < new_len && cells.set(j, Cell::Empty)? {
+                    progress = true;
+                }
+            }
+        }
+
+        // Rule 1.5
+        for j in 1..line_len {
+            if cells[j - 1] != Cell::Filled && cells[j] == Cell::Filled {
+                let mut min_len = line_len + 1;
+                for &Run { start, end, len } in self.runs.iter() {
+                    if start <= j && j <= end && len < min_len {
+                        min_len = len;
+                    }
+                }
+
+                if min_len <= line_len {
+                    let mut empty = j;
+                    while j < empty + min_len && 0 < empty && cells[empty] != Cell::Empty {
+                        empty -= 1;
+                    }
+                    if j < empty + min_len {
+                        for k in j + 1..empty + min_len {
+                            if cells.set(k, Cell::Filled)? {
+                                progress = true;
+                            }
+                        }
+                    }
+
+                    let mut empty = j + 1;
+                    while empty <= j + min_len && empty < line_len && cells[empty] != Cell::Empty {
+                        empty += 1;
+                    }
+                    if empty < j + min_len {
+                        for k in empty - min_len..j {
+                            if cells.set(k, Cell::Filled)? {
+                                progress = true;
+                            }
+                        }
+                    }
+                }
+
+                let mut new_len = 0;
+                let mut new_start = j;
+                let mut new_end = j;
+                while 0 < new_start && cells[new_start] == Cell::Filled {
+                    new_len += 1;
+                    new_start -= 1;
+                }
+                while new_end < line_len && cells[new_end] == Cell::Filled {
+                    new_len += 1;
+                    new_end += 1;
+                }
+
+                let same_len = self
+                    .runs
+                    .iter()
+                    .all(|&Run { start, end, len }| j < start || end < j || len == new_len - 1);
+                if same_len {
+                    if cells.set(new_start, Cell::Empty)? {
+                        progress = true;
+                    }
+                    if cells.set(new_end, Cell::Empty)? {
+                        progress = true;
+                    }
+                }
+            }
+        }
+
+        // ---- PART 2 ----
+        // Rule 2.1
+        for j in 1..run_len {
+            let Run { start, len, .. } = self.runs[j - 1];
+            let current = &mut self.runs[j];
+            if current.start <= start && current.start(start + len + 1)? {
+                progress = true;
+            }
+        }
+        for j in 0..run_len - 1 {
+            let Run { end, len, .. } = self.runs[j + 1];
+            let current = &mut self.runs[j];
+            if end <= current.end && current.end(end - len - 1)? {
+                progress = true;
+            }
+        }
+
+        // Rule 2.2
+        for run in self.runs.iter_mut() {
+            if 0 < run.start && cells[run.start - 1] == Cell::Filled && run.start(run.start + 1)? {
+                progress = true;
+            }
+            if run.end + 1 < line_len
+                && cells[run.end + 1] == Cell::Filled
+                && run.end(run.end - 1)?
+            {
+                progress = true;
+            }
+        }
+
+        // Rule 2.3
+        for j in 1..run_len - 1 {
+            let Run { end: prev_end, .. } = self.runs[j - 1];
+            let Run {
+                start: next_start, ..
+            } = self.runs[j + 1];
+            let run = &mut self.runs[j];
+            let mut seg_start = run.start;
+            let mut seg_end = seg_start - 1;
+
+            for (k, &cell) in cells.iter().enumerate().take(run.end + 1).skip(run.start) {
+                if cell == Cell::Filled {
+                    seg_end = k;
+                } else {
+                    if seg_start + run.len < seg_end + 1 {
+                        if seg_end <= prev_end
+                            && seg_start < next_start
+                            && run.start(seg_end + 2)?
+                        {
+                            progress = true;
+                        }
+
+                        if next_start <= seg_start
+                            && prev_end < seg_end
+                            && run.end(seg_start - 2)?
+                        {
+                            progress = true;
+                        }
+                    }
+
+                    seg_start = k + 1;
+                    seg_end = seg_start - 1;
+                }
+            }
+        }
+
+        // ---- PART 3 ----
+        // Rule 3.1
+        for j in 0..run_len {
+            let prev_end = if j == 0 { 0 } else { self.runs[j - 1].end + 1 };
+            let next_start = if j == run_len - 1 {
+                line_len
+            } else {
+                self.runs[j + 1].start
+            };
+
+            let mut start_cell = prev_end;
+            while start_cell < next_start && cells[start_cell] != Cell::Filled {
+                start_cell += 1;
+            }
+
+            let mut end_cell = next_start - 1;
+            while prev_end < end_cell && cells[end_cell] != Cell::Filled {
+                end_cell -= 1;
+            }
+
+            let run = &mut self.runs[j];
+            let Run {
+                start, end, len, ..
+            } = *run;
+            if start_cell <= end_cell && end_cell < start_cell + len {
+                let u = start_cell + len - end_cell - 1;
+                for k in start_cell + 1..end_cell {
+                    if cells.set(k, Cell::Filled)? {
+                        progress = true;
+                    }
+                }
+
+                if u + start < start_cell && run.start(start_cell - u)? {
+                    progress = true;
+                }
+                if end_cell + u < end && run.end(end_cell + u)? {
+                    progress = true;
+                }
+            }
+        }
+
+        // Rule 3.2
+        for run in self.runs.iter_mut() {
+            let mut seg_len = 0;
+            let mut index = run.start;
+            for (k, &cell) in cells.iter().enumerate().take(run.end + 1).skip(run.start) {
+                if cell != Cell::Empty {
+                    seg_len += 1;
+                }
+                if cell == Cell::Empty || k == run.end {
+                    if run.len <= seg_len {
+                        if run.start(index)? {
+                            progress = true;
+                        }
+                    } else {
+                        seg_len = 0;
+                        index = k + 1;
+                    }
+                }
+            }
+
+            let mut seg_len = 0;
+            let mut index = run.end;
+            for k in (run.start..=run.end).rev() {
+                if cells[k] != Cell::Empty {
+                    seg_len += 1;
+                }
+                if cells[k] == Cell::Empty || k == run.start {
+                    if run.len <= seg_len {
+                        if run.end(index)? {
+                            progress = true;
+                        }
+                    } else {
+                        seg_len = 0;
+                        index = k - 1;
+                    }
+                }
+            }
+        }
+
+        // Rule 3.3-1
+        for j in 0..run_len {
+            let Run { start, len, .. } = self.runs[j];
+            if cells[start] == Cell::Filled && (j == 0 || self.runs[j - 1].end < start) {
+                for k in start + 1..start + len {
+                    if cells.set(k, Cell::Filled)? {
+                        progress = true;
+                    }
+                }
+                if 1 <= start && cells.set(start - 1, Cell::Empty)? {
+                    progress = true;
+                }
+                if start + len < line_len && cells.set(start + len, Cell::Empty)? {
+                    progress = true;
+                }
+
+                self.runs[j].end = start + len - 1;
+
+                if j < run_len - 1 {
+                    let next_run = &mut self.runs[j + 1];
+                    if next_run.start < start + len && next_run.start(start + len + 1)? {
+                        progress = true;
+                    }
+                }
+
+                if 0 < j {
+                    let prev_run = &mut self.runs[j - 1];
+                    if start < prev_run.end + 2 && prev_run.end(start - 2)? {
+                        progress = true;
+                    }
+                }
+            }
+        }
+
+        // Rule 3.3-2
+        for j in 0..run_len {
+            let Run { start, end, .. } = self.runs[j];
+            let mut filled = start;
+            while filled < end && cells[filled] != Cell::Filled {
+                filled += 1;
+            }
+
+            let mut empty = filled;
+            while empty <= end && cells[empty] != Cell::Empty {
+                empty += 1;
+            }
+
+            if (j == 0 || self.runs[j - 1].end < start)
+                && empty < end
+                && filled < empty
+                && self.runs[j].end(empty - 1)?
+            {
+                progress = true;
+            }
+        }
+
+        // Rule 3.3-3
+        for j in 0..run_len {
+            let Run { start, end, len } = self.runs[j];
+
+            if j == 0 || self.runs[j - 1].end < start {
+                let mut filled = start;
+                while filled < end && cells[filled] != Cell::Filled {
+                    filled += 1;
+                }
+
+                let mut index = filled;
+                while index <= end && cells[index] == Cell::Filled {
+                    index += 1;
+                }
+
+                index += 1;
+                let mut k = index;
+                while k <= end {
+                    if cells[k] != Cell::Filled || k == end {
+                        if filled + len < k {
+                            if self.runs[j].end(index - 2)? {
+                                progress = true;
+                            }
+                            k = end + 1;
+                        }
+                        index = k + 1;
+                    }
+                    k += 1;
+                }
+            }
+        }
+
+        Ok(progress)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Solver {
-    row_runs: Vec<Vec<Run>>,
-    col_runs: Vec<Vec<Run>>,
+    rows: Vec<Line>,
+    cols: Vec<Line>,
     row: usize,
     index: Option<usize>,
     dfs: bool,
@@ -241,48 +772,18 @@ pub struct Solver {
 
 impl Solver {
     pub fn new(puz: &Puzzle) -> Self {
-        fn mapper(width: usize, clues: &[usize]) -> Vec<Run> {
-            let size = clues.len();
-            let mut runs = vec![Run::default(); size];
-
-            runs[0].start = 0;
-            runs[size - 1].end = width - 1;
-
-            // Initialize starting point for each run
-            let mut start = clues[0] + 1;
-            for j in 1..size {
-                runs[j].start = start;
-                start += clues[j] + 1;
-            }
-
-            // Initialize ending point for each run
-            let mut end = if clues[size - 1] < width - 1 {
-                width - clues[size - 1] - 2
-            } else {
-                width
-            };
-            for j in (0..size - 1).rev() {
-                runs[j].end = end;
-                end -= clues[j] - 1;
-            }
-
-            for j in 0..size {
-                runs[j].len = clues[j];
-            }
-
-            runs
-        }
-
         Self {
-            row_runs: puz
+            rows: puz
                 .rows
                 .iter()
-                .map(|clues| mapper(puz.cols.len(), clues))
+                .enumerate()
+                .map(|(i, clues)| Line::new(i, puz.cols.len(), clues))
                 .collect(),
-            col_runs: puz
+            cols: puz
                 .cols
                 .iter()
-                .map(|clues| mapper(puz.rows.len(), clues))
+                .enumerate()
+                .map(|(i, clues)| Line::new(i, puz.rows.len(), clues))
                 .collect(),
             row: 0,
             index: None,
@@ -295,12 +796,14 @@ impl Solver {
     }
 
     pub fn solve(&mut self) -> Result<Solution, SolverError> {
-        self.solve_internal(Solution::new(self.col_runs.len(), self.row_runs.len()))
+        self.solve_internal(Solution::new(self.cols.len(), self.rows.len()))
     }
 
     fn solve_internal(&mut self, mut sol: Solution) -> Result<Solution, SolverError> {
         loop {
-            if !self.solve_step(&mut sol)? {
+            let pair = self.solve_step(sol)?;
+            sol = pair.1;
+            if !pair.0 {
                 break;
             }
         }
@@ -314,7 +817,7 @@ impl Solver {
         } else {
             0
         };
-        if self.row_runs[row].len() <= index {
+        if self.rows[row].runs.len() <= index {
             row += 1;
             index = 0;
         }
@@ -322,20 +825,22 @@ impl Solver {
             return Err(SolverError::NoSolution);
         }
 
-        let Run { start, end, len } = self.row_runs[row][index];
+        let Run { start, end, len } = self.rows[row].runs[index];
         'outer: for run_start in start..=end + 1 - len {
             let mut solver = self.clone();
+            solver.rows.iter_mut().for_each(|line| line.solved = false);
+            solver.cols.iter_mut().for_each(|line| line.solved = false);
             solver.row = row;
             solver.index = Some(index);
 
-            let new_run = &mut solver.row_runs[row][index];
+            let new_run = &mut solver.rows[row].runs[index];
             let run_end = run_start + len - 1;
 
-            // Set run at particular location
+            // Set run at a particular location
             new_run.start = run_start;
             new_run.end = run_end;
 
-            sol = Solution::new(self.col_runs.len(), self.row_runs.len());
+            sol = Solution::new(solver.cols.len(), solver.rows.len());
 
             // Update all cells in the run region
             for i in run_start..=run_end {
@@ -359,420 +864,36 @@ impl Solver {
         Err(SolverError::NoSolution)
     }
 
-    fn solve_step(&mut self, sol: &mut Solution) -> Result<bool, SolverError> {
+    fn solve_step(&mut self, mut sol: Solution) -> Result<(bool, Solution), SolverError> {
         let mut progress = false;
-        let height = self.row_runs.len();
-        let width = self.col_runs.len();
 
         // ======================
         // ======== ROWS ========
         // ======================
-        for i in 0..height {
-            let runs = &mut self.row_runs[i];
-            let size = runs.len();
-
-            // ---- PART 1 ----
-            // Rule 1.1
-            for Run { start, end, len } in runs.iter() {
-                for k in end + 1 - len..start + len {
-                    if sol.set(i, k, Cell::Filled)? {
-                        progress = true;
-                    }
+        let rows = self
+            .rows
+            .iter_mut()
+            .zip(sol.rows())
+            .filter_map(|(line, cells)| {
+                if line.solved {
+                    return None;
                 }
-            }
 
-            // Rule 1.2
-            let first_start = runs[0].start;
-            let last_end = runs[size - 1].end;
-            for j in 0..width {
-                if (j < first_start || last_end < j) && sol.set(i, j, Cell::Empty)? {
+                let mut cells = Cells(cells.to_vec());
+                match line.solve(&mut cells) {
+                    Ok(false) => None,
+                    Ok(true) => {
+                        line.solved = line.is_solved(&cells);
+                        Some(Ok((line, cells)))
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (Line { index, .. }, cells) in rows {
+            for (j, cell) in cells.iter().enumerate() {
+                if sol.set(*index, j, *cell)? {
                     progress = true;
-                }
-            }
-            for j in 0..size - 1 {
-                let current_end = runs[j].end;
-                let next_start = runs[j + 1].start;
-                for k in current_end + 1..next_start {
-                    if sol.set(i, k, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.3
-            for j in 0..size {
-                let Run {
-                    start: cur_start,
-                    end: cur_end,
-                    ..
-                } = runs[j];
-
-                if 1 <= cur_start && sol.cells[i * width + cur_start] == Cell::Filled {
-                    let mut length1 = true;
-                    for &Run { start, end, len } in &runs[0..j] {
-                        if start <= cur_start && cur_start <= end && len != 1 {
-                            length1 = false;
-                            break;
-                        }
-                    }
-
-                    if length1 && sol.set(i, cur_start - 1, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-
-                if cur_end + 1 < width && sol.cells[i * width + cur_end] == Cell::Filled {
-                    let mut length1 = true;
-                    for &Run { start, end, len } in &runs[j + 1..size] {
-                        if start <= cur_end && cur_end <= end && len != 1 {
-                            length1 = false;
-                            break;
-                        }
-                    }
-
-                    if length1 && sol.set(i, cur_end + 1, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.4
-            for j in 1..width - 1 {
-                if sol.cells[i * width + (j - 1)] == Cell::Filled
-                    && sol.cells[i * width + j] == Cell::Unknown
-                    && sol.cells[i * width + (j + 1)] == Cell::Filled
-                {
-                    let mut new_len = 1;
-                    for k in (0..j).rev() {
-                        if sol.cells[i * width + k] != Cell::Filled {
-                            break;
-                        }
-                        new_len += 1;
-                    }
-                    for k in j + 1..width {
-                        if sol.cells[i * width + k] != Cell::Filled {
-                            break;
-                        }
-                        new_len += 1;
-                    }
-
-                    let mut max_len = 0;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start < j && j < end && max_len < len {
-                            max_len = len;
-                        }
-                    }
-
-                    if max_len < new_len && sol.set(i, j, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.5
-            for j in 1..width {
-                if (sol.cells[i * width + (j - 1)] == Cell::Empty
-                    || sol.cells[i * width + (j - 1)] == Cell::Unknown)
-                    && sol.cells[i * width + j] == Cell::Filled
-                {
-                    let mut min_len = width + 1;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start <= j && j <= end && len < min_len {
-                            min_len = len;
-                        }
-                    }
-
-                    if min_len <= width {
-                        let mut empty = j;
-                        while j < empty + min_len
-                            && 0 < empty
-                            && sol.cells[i * width + empty] != Cell::Empty
-                        {
-                            empty -= 1;
-                        }
-                        if j < empty + min_len {
-                            for k in j + 1..empty + min_len {
-                                if sol.set(i, k, Cell::Filled)? {
-                                    progress = true;
-                                }
-                            }
-                        }
-
-                        let mut empty = j + 1;
-                        while empty <= j + min_len
-                            && empty < width
-                            && sol.cells[i * width + empty] != Cell::Empty
-                        {
-                            empty += 1;
-                        }
-                        if empty < j + min_len {
-                            for k in empty - min_len..j {
-                                if sol.set(i, k, Cell::Filled)? {
-                                    progress = true;
-                                }
-                            }
-                        }
-                    }
-
-                    let mut new_len = 0;
-                    let mut new_start = j;
-                    let mut new_end = j;
-                    while 0 < new_start && sol.cells[i * width + new_start] == Cell::Filled {
-                        new_len += 1;
-                        new_start -= 1;
-                    }
-                    while new_end < width && sol.cells[i * width + new_end] == Cell::Filled {
-                        new_len += 1;
-                        new_end += 1;
-                    }
-
-                    let mut same_len = true;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start <= j && j <= end && len != new_len - 1 {
-                            same_len = false;
-                            break;
-                        }
-                    }
-
-                    if same_len {
-                        if sol.set(i, new_start, Cell::Empty)? {
-                            progress = true;
-                        }
-                        if sol.set(i, new_end, Cell::Empty)? {
-                            progress = true;
-                        }
-                    }
-                }
-            }
-
-            // ---- PART 2 ----
-            // Rule 2.1
-            for j in 1..size {
-                let Run { start, len, .. } = runs[j - 1];
-                let current = &mut runs[j];
-                if current.start <= start {
-                    let start = start + len + 1;
-                    if current.start(start)? {
-                        progress = true;
-                    }
-                }
-            }
-            for j in 0..size - 1 {
-                let Run { end, len, .. } = runs[j + 1];
-                let current = &mut runs[j];
-                if end <= current.end && runs[j].end(end - len - 1)? {
-                    progress = true;
-                }
-            }
-
-            // Rule 2.2
-            for run in runs.iter_mut() {
-                if 0 < run.start {
-                    let prev_cell = sol.cells[i * sol.width + run.start - 1];
-                    if prev_cell == Cell::Filled && run.start(run.start + 1)? {
-                        progress = true;
-                    }
-                }
-                if run.end + 1 < sol.width {
-                    let next_cell = sol.cells[i * sol.width + run.end + 1];
-                    if next_cell == Cell::Filled && run.end(run.end - 1)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 2.3
-            for j in 1..size - 1 {
-                let Run { end: prev_end, .. } = runs[j - 1];
-                let Run {
-                    start: next_start, ..
-                } = runs[j + 1];
-                let run = &mut runs[j];
-                let mut seg_start = run.start;
-                let mut seg_end = seg_start - 1;
-                for k in run.start..=run.end {
-                    if sol.cells[i * sol.width + k] == Cell::Filled {
-                        seg_end = k;
-                    } else {
-                        if seg_start + run.len < seg_end + 1 {
-                            if seg_end <= prev_end
-                                && seg_start < next_start
-                                && run.start(seg_end + 2)?
-                            {
-                                progress = true;
-                            }
-                            if next_start <= seg_start
-                                && prev_end < seg_end
-                                && run.end(seg_start - 2)?
-                            {
-                                progress = true;
-                            }
-                        }
-                        seg_start = k + 1;
-                        seg_end = seg_start - 1;
-                    }
-                }
-            }
-
-            // ---- PART 3 ----
-            // Rule 3.1
-            for j in 0..size {
-                let prev_end = if j == 0 { -1 } else { runs[j - 1].end as isize };
-                let next_start = if j == size - 1 {
-                    width as isize
-                } else {
-                    runs[j + 1].start as isize
-                };
-                let mut start_cell = prev_end + 1;
-                while start_cell < next_start
-                    && sol.cells[i * sol.width + start_cell as usize] != Cell::Filled
-                {
-                    start_cell += 1;
-                }
-                let mut end_cell = next_start - 1;
-                while prev_end < end_cell
-                    && sol.cells[i * sol.width + end_cell as usize] != Cell::Filled
-                {
-                    end_cell -= 1;
-                }
-
-                let run = &mut runs[j];
-                if start_cell <= end_cell && end_cell < start_cell + run.len as isize {
-                    let u = start_cell + run.len as isize - end_cell - 1;
-                    for k in start_cell + 1..end_cell {
-                        if sol.set(i, k as usize, Cell::Filled)? {
-                            progress = true;
-                        }
-                    }
-
-                    if u + (run.start as isize) < start_cell
-                        && run.start((start_cell - u) as usize)?
-                    {
-                        progress = true;
-                    }
-                    if end_cell + u < run.end as isize && run.end((end_cell + u) as usize)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 3.2
-            for run in runs.iter_mut() {
-                let mut seg_len = 0;
-                let mut index = run.start;
-                for k in run.start..=run.end {
-                    if sol.cells[i * sol.width + k] != Cell::Empty {
-                        seg_len += 1;
-                    }
-                    if sol.cells[i * sol.width + k] == Cell::Empty || k == run.end {
-                        if run.len <= seg_len {
-                            if run.start(index)? {
-                                progress = true;
-                            }
-                        } else {
-                            seg_len = 0;
-                            index = k + 1;
-                        }
-                    }
-                }
-                seg_len = 0;
-                index = run.end;
-                for k in (run.start..=run.end).rev() {
-                    if sol.cells[i * sol.width + k] != Cell::Empty {
-                        seg_len += 1;
-                    }
-                    if sol.cells[i * sol.width + k] == Cell::Empty || k == run.start {
-                        if run.len <= seg_len {
-                            if run.end(index)? {
-                                progress = true;
-                            }
-                        } else {
-                            seg_len = 0;
-                            index = k - 1;
-                        }
-                    }
-                }
-            }
-
-            // Rule 3.3-1
-            for j in 0..size {
-                let Run { start, len, .. } = runs[j];
-                if sol.cells[i * sol.width + start] == Cell::Filled
-                    && (j == 0 || runs[j - 1].end < start)
-                {
-                    for k in start + 1..start + len {
-                        if sol.set(i, k, Cell::Filled)? {
-                            progress = true;
-                        }
-                    }
-                    if 1 <= start && sol.set(i, start - 1, Cell::Empty)? {
-                        progress = true;
-                    }
-                    if start + len < width && sol.set(i, start + len, Cell::Empty)? {
-                        progress = true;
-                    }
-                    runs[j].end = start + len - 1;
-                    if j < size - 1
-                        && runs[j + 1].start < start + len
-                        && runs[j + 1].start(start + len + 1)?
-                    {
-                        progress = true;
-                    }
-                    if 0 < j && start < runs[j - 1].end + 2 && runs[j - 1].end(start - 2)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 3.3-2
-            for j in 0..size {
-                let Run { start, end, .. } = runs[j];
-                let mut filled = start;
-                while filled < end && sol.cells[i * sol.width + filled] != Cell::Filled {
-                    filled += 1;
-                }
-                let mut empty = filled;
-                while empty <= end && sol.cells[i * sol.width + empty] != Cell::Empty {
-                    empty += 1;
-                }
-                if (j == 0 || runs[j - 1].end < start)
-                    && empty < end
-                    && filled < empty
-                    && runs[j].end(empty - 1)?
-                {
-                    progress = true;
-                }
-            }
-
-            // Rule 3.3-3
-            for j in 0..size {
-                let Run { start, end, len } = runs[j];
-
-                if j == 0 || runs[j - 1].end < start {
-                    let mut filled = start;
-                    while filled < end && sol.cells[i * sol.width + filled] != Cell::Filled {
-                        filled += 1;
-                    }
-
-                    let mut index = filled;
-                    while index <= end && sol.cells[i * sol.width + index] == Cell::Filled {
-                        index += 1;
-                    }
-
-                    index += 1;
-                    let mut k = index;
-                    while k <= end {
-                        if sol.cells[i * sol.width + k] != Cell::Filled || k == end {
-                            if filled + len < k {
-                                if runs[j].end(index - 2)? {
-                                    progress = true;
-                                }
-                                k = end + 1;
-                            }
-                            index = k + 1;
-                        }
-                        k += 1;
-                    }
                 }
             }
         }
@@ -780,416 +901,34 @@ impl Solver {
         // =========================
         // ======== COLUMNS ========
         // =========================
-        for i in 0..width {
-            let runs = &mut self.col_runs[i];
-            let size = runs.len();
-
-            // ---- PART 1 ----
-            // Rule 1.1
-            for Run { start, end, len } in runs.iter() {
-                for k in end + 1 - len..start + len {
-                    if sol.set(k, i, Cell::Filled)? {
-                        progress = true;
-                    }
+        let cols = self
+            .cols
+            .iter_mut()
+            .zip(sol.columns())
+            .filter_map(|(line, cells)| {
+                if line.solved {
+                    return None;
                 }
-            }
 
-            // Rule 1.2
-            let first_start = runs[0].start;
-            let last_end = runs[size - 1].end;
-            for j in 0..height {
-                if (j < first_start || last_end < j) && sol.set(j, i, Cell::Empty)? {
+                let mut cells = Cells(cells.to_vec());
+                match line.solve(&mut cells) {
+                    Ok(false) => None,
+                    Ok(true) => {
+                        line.solved = line.is_solved(&cells);
+                        Some(Ok((line, cells)))
+                    }
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (Line { index, .. }, cells) in cols {
+            for (i, cell) in cells.iter().enumerate() {
+                if sol.set(i, *index, *cell)? {
                     progress = true;
-                }
-            }
-            for j in 0..size - 1 {
-                let current_end = runs[j].end;
-                let next_start = runs[j + 1].start;
-                for k in current_end + 1..next_start {
-                    if sol.set(k, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.3
-            for j in 0..size {
-                let Run {
-                    start: cur_start,
-                    end: cur_end,
-                    ..
-                } = runs[j];
-
-                if 1 <= cur_start && sol.cells[cur_start * width + i] == Cell::Filled {
-                    let mut length1 = true;
-                    for &Run { start, end, len } in &runs[0..j] {
-                        if start <= cur_start && cur_start <= end && len != 1 {
-                            length1 = false;
-                            break;
-                        }
-                    }
-
-                    if length1 && sol.set(cur_start - 1, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-
-                if cur_end + 1 < height && sol.cells[cur_end * width + i] == Cell::Filled {
-                    let mut length1 = true;
-                    for &Run { start, end, len } in &runs[j + 1..size] {
-                        if start <= cur_end && cur_end <= end && len != 1 {
-                            length1 = false;
-                            break;
-                        }
-                    }
-
-                    if length1 && sol.set(cur_end + 1, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.4
-            for j in 1..height - 1 {
-                if sol.cells[(j - 1) * width + i] == Cell::Filled
-                    && sol.cells[j * width + i] == Cell::Unknown
-                    && sol.cells[(j + 1) * width + i] == Cell::Filled
-                {
-                    let mut new_len = 1;
-                    for k in (0..j).rev() {
-                        if sol.cells[k * width + i] != Cell::Filled {
-                            break;
-                        }
-                        new_len += 1;
-                    }
-                    for k in j + 1..height {
-                        if sol.cells[k * width + i] != Cell::Filled {
-                            break;
-                        }
-                        new_len += 1;
-                    }
-
-                    let mut max_len = 0;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start < j && j < end && max_len < len {
-                            max_len = len;
-                        }
-                    }
-
-                    if max_len < new_len && sol.set(j, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 1.5
-            for j in 1..height {
-                if (sol.cells[(j - 1) * width + i] == Cell::Empty
-                    || sol.cells[(j - 1) * width + i] == Cell::Unknown)
-                    && sol.cells[j * width + i] == Cell::Filled
-                {
-                    let mut min_len = height + 1;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start <= j && j <= end && len < min_len {
-                            min_len = len;
-                        }
-                    }
-
-                    if min_len <= height {
-                        let mut empty = j;
-                        while j < empty + min_len
-                            && 0 < empty
-                            && sol.cells[empty * width + i] != Cell::Empty
-                        {
-                            empty -= 1;
-                        }
-                        if j < empty + min_len {
-                            for k in j + 1..empty + min_len {
-                                if sol.set(k, i, Cell::Filled)? {
-                                    progress = true;
-                                }
-                            }
-                        }
-
-                        let mut empty = j + 1;
-                        while empty <= j + min_len
-                            && empty < height
-                            && sol.cells[empty * width + i] != Cell::Empty
-                        {
-                            empty += 1;
-                        }
-                        if empty < j + min_len {
-                            for k in empty - min_len..j {
-                                if sol.set(k, i, Cell::Filled)? {
-                                    progress = true;
-                                }
-                            }
-                        }
-                    }
-
-                    let mut new_len = 0;
-                    let mut new_start = j;
-                    let mut new_end = j;
-                    while 0 < new_start && sol.cells[new_start * width + i] == Cell::Filled {
-                        new_len += 1;
-                        new_start -= 1;
-                    }
-                    while new_end < height && sol.cells[new_end * width + i] == Cell::Filled {
-                        new_len += 1;
-                        new_end += 1;
-                    }
-
-                    let mut same_len = true;
-                    for &Run { start, end, len } in &runs[0..size] {
-                        if start <= j && j <= end && len != new_len - 1 {
-                            same_len = false;
-                            break;
-                        }
-                    }
-
-                    if same_len {
-                        if sol.set(new_start, i, Cell::Empty)? {
-                            progress = true;
-                        }
-                        if sol.set(new_end, i, Cell::Empty)? {
-                            progress = true;
-                        }
-                    }
-                }
-            }
-
-            // ---- PART 2 ----
-            // Rule 2.1
-            for j in 1..size {
-                let Run { start, len, .. } = runs[j - 1];
-                let current = &mut runs[j];
-                if current.start <= start {
-                    let start = start + len + 1;
-                    if current.start(start)? {
-                        progress = true;
-                    }
-                }
-            }
-            for j in 0..size - 1 {
-                let Run { end, len, .. } = runs[j + 1];
-                let current = &mut runs[j];
-                if end <= current.end && runs[j].end(end - len - 1)? {
-                    progress = true;
-                }
-            }
-
-            // Rule 2.2
-            for run in runs.iter_mut() {
-                if 0 < run.start {
-                    let prev_cell = sol.cells[(run.start - 1) * sol.width + i];
-                    if prev_cell == Cell::Filled && run.start(run.start + 1)? {
-                        progress = true;
-                    }
-                }
-                if run.end + 1 < sol.height {
-                    let next_cell = sol.cells[(run.end + 1) * sol.width + i];
-                    if next_cell == Cell::Filled && run.end(run.end - 1)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 2.3
-            for j in 1..size - 1 {
-                let Run { end: prev_end, .. } = runs[j - 1];
-                let Run {
-                    start: next_start, ..
-                } = runs[j + 1];
-                let run = &mut runs[j];
-                let mut seg_start = run.start;
-                let mut seg_end = seg_start - 1;
-                for k in run.start..=run.end {
-                    if sol.cells[k * sol.width + i] == Cell::Filled {
-                        seg_end = k;
-                    } else {
-                        if seg_start + run.len < seg_end + 1 {
-                            if seg_end <= prev_end
-                                && seg_start < next_start
-                                && run.start(seg_end + 2)?
-                            {
-                                progress = true;
-                            }
-                            if next_start <= seg_start
-                                && prev_end < seg_end
-                                && run.end(seg_start - 2)?
-                            {
-                                progress = true;
-                            }
-                        }
-                        seg_start = k + 1;
-                        seg_end = seg_start - 1;
-                    }
-                }
-            }
-
-            // ---- PART 3 ----
-            // Rule 3.1
-            for j in 0..size {
-                let prev_end = if j == 0 { -1 } else { runs[j - 1].end as isize };
-                let next_start = if j == size - 1 {
-                    height as isize
-                } else {
-                    runs[j + 1].start as isize
-                };
-                let mut start_cell = prev_end + 1;
-                while start_cell < next_start
-                    && sol.cells[start_cell as usize * sol.width + i] != Cell::Filled
-                {
-                    start_cell += 1;
-                }
-                let mut end_cell = next_start - 1;
-                while prev_end < end_cell
-                    && sol.cells[end_cell as usize * sol.width + i] != Cell::Filled
-                {
-                    end_cell -= 1;
-                }
-
-                let run = &mut runs[j];
-                if start_cell <= end_cell && end_cell < start_cell + run.len as isize {
-                    let u = start_cell + run.len as isize - end_cell - 1;
-                    for k in start_cell + 1..end_cell {
-                        if sol.set(k as usize, i, Cell::Filled)? {
-                            progress = true;
-                        }
-                    }
-
-                    if u + (run.start as isize) < start_cell
-                        && run.start((start_cell - u) as usize)?
-                    {
-                        progress = true;
-                    }
-                    if end_cell + u < run.end as isize && run.end((end_cell + u) as usize)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 3.2
-            for run in runs.iter_mut() {
-                let mut seg_len = 0;
-                let mut index = run.start;
-                for k in run.start..=run.end {
-                    if sol.cells[k * sol.width + i] != Cell::Empty {
-                        seg_len += 1;
-                    }
-                    if sol.cells[k * sol.width + i] == Cell::Empty || k == run.end {
-                        if run.len <= seg_len {
-                            if run.start(index)? {
-                                progress = true;
-                            }
-                        } else {
-                            seg_len = 0;
-                            index = k + 1;
-                        }
-                    }
-                }
-                seg_len = 0;
-                index = run.end;
-                for k in (run.start..=run.end).rev() {
-                    if sol.cells[k * sol.width + i] != Cell::Empty {
-                        seg_len += 1;
-                    }
-                    if sol.cells[k * sol.width + i] == Cell::Empty || k == run.start {
-                        if run.len <= seg_len {
-                            if run.end(index)? {
-                                progress = true;
-                            }
-                        } else {
-                            seg_len = 0;
-                            index = k - 1;
-                        }
-                    }
-                }
-            }
-
-            // Rule 3.3-1
-            for j in 0..size {
-                let Run { start, len, .. } = runs[j];
-                if sol.cells[start * sol.width + i] == Cell::Filled
-                    && (j == 0 || runs[j - 1].end < start)
-                {
-                    for k in start + 1..start + len {
-                        if sol.set(k, i, Cell::Filled)? {
-                            progress = true;
-                        }
-                    }
-                    if 1 <= start && sol.set(start - 1, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                    if start + len < height && sol.set(start + len, i, Cell::Empty)? {
-                        progress = true;
-                    }
-                    runs[j].end = start + len - 1;
-                    if j < size - 1
-                        && runs[j + 1].start < start + len
-                        && runs[j + 1].start(start + len + 1)?
-                    {
-                        progress = true;
-                    }
-                    if 0 < j && start < runs[j - 1].end + 2 && runs[j - 1].end(start - 2)? {
-                        progress = true;
-                    }
-                }
-            }
-
-            // Rule 3.3-2
-            for j in 0..size {
-                let Run { start, end, .. } = runs[j];
-                let mut filled = start;
-                while filled < end && sol.cells[filled * sol.width + i] != Cell::Filled {
-                    filled += 1;
-                }
-                let mut empty = filled;
-                while empty <= end && sol.cells[empty * sol.width + i] != Cell::Empty {
-                    empty += 1;
-                }
-                if (j == 0 || runs[j - 1].end < start)
-                    && empty < end
-                    && filled < empty
-                    && runs[j].end(empty - 1)?
-                {
-                    progress = true;
-                }
-            }
-
-            // Rule 3.3-3
-            for j in 0..size {
-                let Run { start, end, len } = runs[j];
-
-                if j == 0 || runs[j - 1].end < start {
-                    let mut filled = start;
-                    while filled < end && sol.cells[filled * sol.width + i] != Cell::Filled {
-                        filled += 1;
-                    }
-
-                    let mut index = filled;
-                    while index <= end && sol.cells[index * sol.width + i] == Cell::Filled {
-                        index += 1;
-                    }
-
-                    index += 1;
-                    let mut k = index;
-                    while k <= end {
-                        if sol.cells[k * sol.width + i] != Cell::Filled || k == end {
-                            if filled + len < k {
-                                if runs[j].end(index - 2)? {
-                                    progress = true;
-                                }
-                                k = end + 1;
-                            }
-                            index = k + 1;
-                        }
-                        k += 1;
-                    }
                 }
             }
         }
 
-        Ok(progress)
+        Ok((progress, sol))
     }
 }
