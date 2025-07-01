@@ -800,6 +800,37 @@ impl Solver {
     }
 
     fn solve_internal(&mut self, mut sol: Solution) -> Result<Solution, SolverError> {
+        for Line {
+            index: i,
+            runs,
+            solved,
+        } in &mut self.rows
+        {
+            if 1 < runs.len() || runs.len() == 1 && runs[0].len != 0 {
+                continue;
+            }
+
+            for j in 0..sol.width {
+                sol.set(*i, j, Cell::Empty)?;
+            }
+            *solved = true;
+        }
+        for Line {
+            index: j,
+            runs,
+            solved,
+        } in &mut self.cols
+        {
+            if 1 < runs.len() || runs.len() == 1 && runs[0].len != 0 {
+                continue;
+            }
+
+            for i in 0..sol.height {
+                sol.set(i, *j, Cell::Empty)?;
+            }
+            *solved = true;
+        }
+
         loop {
             let pair = self.solve_step(sol)?;
             sol = pair.1;
