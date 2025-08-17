@@ -10,6 +10,12 @@ pub enum PuzzleError {
 
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
+
+    #[error("Row {0} exceeds width")]
+    Row(usize),
+
+    #[error("Column {0} exceeds height")]
+    Column(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -51,12 +57,26 @@ impl Puzzle {
         Ok(Self { rows, cols })
     }
 
-    #[inline]
+    pub fn validate(&self) -> Result<(), PuzzleError> {
+        for (pos, row) in self.rows.iter().enumerate() {
+            if self.width() < row.iter().sum::<usize>() + row.len() - 1 {
+                return Err(PuzzleError::Row(pos + 1));
+            }
+        }
+
+        for (pos, col) in self.cols.iter().enumerate() {
+            if self.height() < col.iter().sum::<usize>() + col.len() - 1 {
+                return Err(PuzzleError::Column(pos + 1));
+            }
+        }
+
+        Ok(())
+    }
+
     pub fn width(&self) -> usize {
         self.cols.len()
     }
 
-    #[inline]
     pub fn height(&self) -> usize {
         self.rows.len()
     }
@@ -270,14 +290,12 @@ impl Cells {
 impl Deref for Cells {
     type Target = [Cell];
 
-    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
 impl DerefMut for Cells {
-    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -961,5 +979,49 @@ impl Solver {
         }
 
         Ok((progress, sol))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_puzzle_validate() {
+        assert!(
+            Puzzle {
+                rows: vec![],
+                cols: vec![],
+            }
+            .validate()
+            .is_ok()
+        );
+
+        assert!(
+            Puzzle {
+                rows: vec![vec![0]],
+                cols: vec![vec![0]],
+            }
+            .validate()
+            .is_ok()
+        );
+
+        assert!(matches!(
+            Puzzle {
+                rows: vec![vec![2]],
+                cols: vec![vec![0]],
+            }
+            .validate(),
+            Err(PuzzleError::Row(1))
+        ));
+
+        assert!(matches!(
+            Puzzle {
+                rows: vec![vec![0]],
+                cols: vec![vec![2]],
+            }
+            .validate(),
+            Err(PuzzleError::Column(1))
+        ));
     }
 }
