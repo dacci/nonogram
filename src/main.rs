@@ -19,6 +19,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let puzzle = Puzzle::from_reader(File::open(&args.path)?)?;
+    puzzle.validate()?;
 
     let mut solver = Solver::new(&puzzle);
     if args.disable_dfs {
