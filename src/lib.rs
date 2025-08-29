@@ -679,6 +679,8 @@ impl Line {
                         if run.end(index)? {
                             progress = true;
                         }
+                    } else if k == 0 {
+                        break;
                     } else {
                         seg_len = 0;
                         index = k - 1;
@@ -882,10 +884,10 @@ impl Solver {
             solver.row = row;
             solver.index = Some(index);
 
-            let new_run = &mut solver.rows[row].runs[index];
-            let run_end = run_start + len - 1;
+            let run_end = if 0 < len { run_start + len - 1 } else { end };
 
             // Set run at a particular location
+            let new_run = &mut solver.rows[row].runs[index];
             new_run.start = run_start;
             new_run.end = run_end;
 
