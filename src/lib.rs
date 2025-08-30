@@ -757,49 +757,137 @@ impl Line {
 }
 
 #[derive(Debug, Clone)]
-pub struct Solver {
+struct Stat {
     rows: Vec<Line>,
     cols: Vec<Line>,
     row: usize,
     index: Option<usize>,
-    dfs: bool,
 }
 
-impl Solver {
-    pub fn new(puz: &Puzzle) -> Self {
+impl Stat {
+    fn new(puzzle: &Puzzle) -> Self {
         Self {
-            rows: puz
+            rows: puzzle
                 .rows
                 .iter()
                 .enumerate()
-                .map(|(i, clues)| Line::new(i, puz.cols.len(), clues))
+                .map(|(i, clues)| Line::new(i, puzzle.cols.len(), clues))
                 .collect(),
-            cols: puz
+            cols: puzzle
                 .cols
                 .iter()
                 .enumerate()
-                .map(|(i, clues)| Line::new(i, puz.rows.len(), clues))
+                .map(|(i, clues)| Line::new(i, puzzle.rows.len(), clues))
                 .collect(),
             row: 0,
             index: None,
-            dfs: true,
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Solver {
+    dfs: bool,
+}
+
+impl Default for Solver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Solver {
+    pub fn new() -> Self {
+        Self { dfs: true }
     }
 
     pub fn set_dfs(&mut self, dfs: bool) {
         self.dfs = dfs;
     }
 
-    pub fn solve(&mut self) -> Result<Solution, SolverError> {
-        self.solve_internal(Solution::new(self.cols.len(), self.rows.len()))
+    pub fn solve(&self, puzzle: &Puzzle) -> Result<Solution, SolverError> {
+        let mut error = SolverError::NoSolution;
+        let mut stack = vec![(
+            Stat::new(puzzle),
+            Solution::new(puzzle.width(), puzzle.height()),
+        )];
+
+        while let Some((mut stat, mut sol)) = stack.pop() {
+            error = match self.solve_internal(&mut stat, &mut sol) {
+                Ok(solved) => {
+                    if solved || !self.dfs {
+                        return Ok(sol);
+                    } else {
+                        SolverError::NoSolution
+                    }
+                }
+                Err(SolverError::Conflict) => continue,
+                Err(e) => e,
+            };
+
+            let mut row = stat.row;
+            let mut index = if let Some(index) = stat.index {
+                index + 1
+            } else {
+                0
+            };
+            if stat.rows[row].runs.len() <= index {
+                row += 1;
+                index = 0;
+            }
+            if sol.height <= row {
+                continue;
+            }
+
+            let Run { start, end, len } = stat.rows[row].runs[index];
+            'outer: for run_start in start..=end + 1 - len {
+                let mut new_stat = stat.clone();
+                new_stat
+                    .rows
+                    .iter_mut()
+                    .for_each(|line| line.solved = false);
+                new_stat
+                    .cols
+                    .iter_mut()
+                    .for_each(|line| line.solved = false);
+                new_stat.row = row;
+                new_stat.index = Some(index);
+
+                let run_end = if 0 < len { run_start + len - 1 } else { end };
+
+                // Set run at a particular location
+                let new_run = &mut new_stat.rows[row].runs[index];
+                new_run.start = run_start;
+                new_run.end = run_end;
+
+                let mut new_sol = Solution::new(new_stat.cols.len(), new_stat.rows.len());
+
+                // Update all cells in the run region
+                for i in run_start..=run_end {
+                    if new_sol.set(row, i, Cell::Filled).is_err() {
+                        continue 'outer;
+                    }
+                }
+                if 0 < run_start && new_sol.set(row, run_end + 1, Cell::Empty).is_err() {
+                    continue;
+                }
+                if run_end <= new_sol.width && new_sol.set(row, run_end + 1, Cell::Empty).is_err() {
+                    continue;
+                }
+
+                stack.push((new_stat, new_sol));
+            }
+        }
+
+        Err(error)
     }
 
-    fn solve_internal(&mut self, mut sol: Solution) -> Result<Solution, SolverError> {
+    fn solve_internal(&self, stat: &mut Stat, sol: &mut Solution) -> Result<bool, SolverError> {
         for Line {
             index: i,
             runs,
             solved,
-        } in &mut self.rows
+        } in &mut stat.rows
         {
             if 1 < runs.len() || runs.len() == 1 && runs[0].len != 0 {
                 continue;
@@ -814,7 +902,7 @@ impl Solver {
             index: j,
             runs,
             solved,
-        } in &mut self.cols
+        } in &mut stat.cols
         {
             if 1 < runs.len() || runs.len() == 1 && runs[0].len != 0 {
                 continue;
@@ -827,98 +915,47 @@ impl Solver {
         }
 
         loop {
-            let pair = self.solve_step(sol)?;
-            sol = pair.1;
-            if !pair.0 {
+            if !self.solve_step(stat, sol)? {
                 break;
             }
         }
-        if sol.filled() || !self.dfs {
-            return Ok(sol);
-        }
 
-        let mut row = self.row;
-        let mut index = if let Some(index) = self.index {
-            index + 1
-        } else {
-            0
-        };
-        if self.rows[row].runs.len() <= index {
-            row += 1;
-            index = 0;
-        }
-        if sol.height <= row {
-            return Err(SolverError::NoSolution);
-        }
-
-        let Run { start, end, len } = self.rows[row].runs[index];
-        'outer: for run_start in start..=end + 1 - len {
-            let mut solver = self.clone();
-            solver.rows.iter_mut().for_each(|line| line.solved = false);
-            solver.cols.iter_mut().for_each(|line| line.solved = false);
-            solver.row = row;
-            solver.index = Some(index);
-
-            let run_end = if 0 < len { run_start + len - 1 } else { end };
-
-            // Set run at a particular location
-            let new_run = &mut solver.rows[row].runs[index];
-            new_run.start = run_start;
-            new_run.end = run_end;
-
-            sol = Solution::new(solver.cols.len(), solver.rows.len());
-
-            // Update all cells in the run region
-            for i in run_start..=run_end {
-                if sol.set(row, i, Cell::Filled).is_err() {
-                    continue 'outer;
-                }
-            }
-            if 0 < run_start && sol.set(row, run_end + 1, Cell::Empty).is_err() {
-                continue;
-            }
-            if run_end <= sol.width && sol.set(row, run_end + 1, Cell::Empty).is_err() {
-                continue;
-            }
-
-            let res = solver.solve_internal(sol);
-            if res.is_ok() {
-                return res;
-            }
-        }
-
-        Err(SolverError::NoSolution)
+        Ok(sol.filled())
     }
 
-    fn solve_step(&mut self, mut sol: Solution) -> Result<(bool, Solution), SolverError> {
+    fn solve_step(&self, stat: &mut Stat, sol: &mut Solution) -> Result<bool, SolverError> {
         let mut progress = false;
+
+        fn process(
+            (line, cells): (&mut Line, &[Cell]),
+        ) -> Option<Result<(usize, Cells), SolverError>> {
+            if line.solved {
+                return None;
+            }
+
+            let mut cells = Cells(cells.to_vec());
+            match line.solve(&mut cells) {
+                Ok(false) => None,
+                Ok(true) => {
+                    line.solved = line.is_solved(&cells);
+                    Some(Ok((line.index, cells)))
+                }
+                Err(e) => Some(Err(e)),
+            }
+        }
 
         // ======================
         // ======== ROWS ========
         // ======================
-        let rows = self
+        let rows = stat
             .rows
             .iter_mut()
             .zip(sol.rows())
-            .filter_map(|(line, cells)| {
-                if line.solved {
-                    return None;
-                }
-
-                let mut cells = Cells(cells.to_vec());
-                match line.solve(&mut cells) {
-                    Ok(false) => None,
-                    Ok(true) => {
-                        line.solved = line.is_solved(&cells);
-                        Some(Ok((line, cells)))
-                    }
-                    Err(e) => Some(Err(e)),
-                }
-            })
+            .filter_map(process)
             .collect::<Result<Vec<_>, _>>()?;
-        for (Line { index, .. }, cells) in rows {
+        for (index, cells) in rows {
             for (j, cell) in cells.iter().enumerate() {
-                if sol.set(*index, j, *cell)? {
+                if sol.set(index, j, *cell)? {
                     progress = true;
                 }
             }
@@ -927,35 +964,21 @@ impl Solver {
         // =========================
         // ======== COLUMNS ========
         // =========================
-        let cols = self
+        let cols = stat
             .cols
             .iter_mut()
             .zip(sol.columns())
-            .filter_map(|(line, cells)| {
-                if line.solved {
-                    return None;
-                }
-
-                let mut cells = Cells(cells.to_vec());
-                match line.solve(&mut cells) {
-                    Ok(false) => None,
-                    Ok(true) => {
-                        line.solved = line.is_solved(&cells);
-                        Some(Ok((line, cells)))
-                    }
-                    Err(e) => Some(Err(e)),
-                }
-            })
+            .filter_map(process)
             .collect::<Result<Vec<_>, _>>()?;
-        for (Line { index, .. }, cells) in cols {
+        for (index, cells) in cols {
             for (i, cell) in cells.iter().enumerate() {
-                if sol.set(i, *index, *cell)? {
+                if sol.set(i, index, *cell)? {
                     progress = true;
                 }
             }
         }
 
-        Ok((progress, sol))
+        Ok(progress)
     }
 }
 

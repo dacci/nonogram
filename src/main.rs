@@ -21,12 +21,12 @@ fn main() -> Result<()> {
     let puzzle = Puzzle::from_reader(File::open(&args.path)?)?;
     puzzle.validate()?;
 
-    let mut solver = Solver::new(&puzzle);
+    let mut solver = Solver::new();
     if args.disable_dfs {
         solver.set_dfs(false);
     }
 
-    let sol = solver.solve()?;
+    let sol = solver.solve(&puzzle)?;
     print_solution(&sol, puzzle.width());
 
     Ok(())
