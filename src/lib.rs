@@ -1,7 +1,6 @@
 use std::io;
-use std::iter::StepBy;
 use std::num::ParseIntError;
-use std::ops::{Deref, DerefMut, Range};
+use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PuzzleError {
@@ -203,35 +202,11 @@ impl Solution {
     }
 
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
-        SliceIterator::new(self.h_cells.as_slice(), self.width)
+        self.h_cells.chunks_exact(self.width)
     }
 
     pub fn columns(&self) -> impl Iterator<Item = &[Cell]> {
-        SliceIterator::new(self.v_cells.as_slice(), self.height)
-    }
-}
-
-pub struct SliceIterator<'a> {
-    slice: &'a [Cell],
-    step: usize,
-    pos: StepBy<Range<usize>>,
-}
-
-impl<'a> SliceIterator<'a> {
-    fn new(slice: &'a [Cell], step: usize) -> Self {
-        Self {
-            slice,
-            step,
-            pos: (0..slice.len()).step_by(step),
-        }
-    }
-}
-
-impl<'a> Iterator for SliceIterator<'a> {
-    type Item = &'a [Cell];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.pos.next().map(|pos| &self.slice[pos..pos + self.step])
+        self.v_cells.chunks_exact(self.height)
     }
 }
 
