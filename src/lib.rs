@@ -1,6 +1,8 @@
+use futures::executor::ThreadPool;
 use std::io;
 use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 #[derive(Debug, thiserror::Error)]
 pub enum PuzzleError {
@@ -83,6 +85,9 @@ impl Puzzle {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SolverError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+
     #[error("Conflict detected")]
     Conflict,
 
@@ -357,6 +362,10 @@ impl Line {
     }
 
     fn solve(&mut self, cells: &mut Cells) -> Result<bool, SolverError> {
+        if self.solved {
+            return Ok(false);
+        }
+
         let mut progress = false;
         let line_len = cells.len();
         let run_len = self.runs.len();
@@ -752,6 +761,10 @@ impl Line {
             }
         }
 
+        if progress {
+            self.solved = self.is_solved(cells);
+        }
+
         Ok(progress)
     }
 }
@@ -785,20 +798,26 @@ impl Stat {
     }
 }
 
-#[derive(Debug, Clone)]
+type LineStat = (bool, Line, Vec<Cell>);
+
+#[derive(Debug)]
 pub struct Solver {
+    thread_pool: ThreadPool,
+    sender: Sender<Result<LineStat, SolverError>>,
+    receiver: Receiver<Result<LineStat, SolverError>>,
     dfs: bool,
 }
 
-impl Default for Solver {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Solver {
-    pub fn new() -> Self {
-        Self { dfs: true }
+    pub fn new() -> Result<Self, SolverError> {
+        let thread_pool = ThreadPool::new()?;
+        let (sender, receiver) = channel();
+        Ok(Self {
+            thread_pool,
+            sender,
+            receiver,
+            dfs: true,
+        })
     }
 
     pub fn set_dfs(&mut self, dfs: bool) {
@@ -925,57 +944,76 @@ impl Solver {
 
     fn solve_step(&self, stat: &mut Stat, sol: &mut Solution) -> Result<bool, SolverError> {
         let mut progress = false;
-
-        fn process(
-            (line, cells): (&mut Line, &[Cell]),
-        ) -> Option<Result<(usize, Cells), SolverError>> {
-            if line.solved {
-                return None;
-            }
-
-            let mut cells = Cells(cells.to_vec());
-            match line.solve(&mut cells) {
-                Ok(false) => None,
-                Ok(true) => {
-                    line.solved = line.is_solved(&cells);
-                    Some(Ok((line.index, cells)))
-                }
-                Err(e) => Some(Err(e)),
-            }
-        }
+        let mut error = None;
 
         // ======================
         // ======== ROWS ========
         // ======================
-        let rows = stat
-            .rows
-            .iter_mut()
-            .zip(sol.rows())
-            .filter_map(process)
-            .collect::<Result<Vec<_>, _>>()?;
-        for (index, cells) in rows {
-            for (j, cell) in cells.iter().enumerate() {
-                if sol.set(index, j, *cell)? {
-                    progress = true;
+        for (mut line, cells) in stat.rows.drain(..).zip(sol.rows()) {
+            let mut cells = Cells(cells.to_vec());
+            let sender = self.sender.clone();
+
+            self.thread_pool.spawn_ok(async move {
+                let res = match line.solve(&mut cells) {
+                    Ok(progress) => Ok((progress, line, cells.0)),
+                    Err(e) => Err(e),
+                };
+                sender.send(res).unwrap();
+            });
+        }
+        for _ in 0..sol.height {
+            match self.receiver.recv().unwrap() {
+                Ok((line_progress, line, cells)) => {
+                    if line_progress {
+                        for (j, cell) in cells.into_iter().enumerate() {
+                            if sol.set(line.index, j, cell)? {
+                                progress = true;
+                            }
+                        }
+                    }
+                    stat.rows.push(line);
                 }
+                Err(e) => error = Some(e),
             }
+        }
+        stat.rows.sort_by_key(|l| l.index);
+        if let Some(e) = error {
+            return Err(e);
         }
 
         // =========================
         // ======== COLUMNS ========
         // =========================
-        let cols = stat
-            .cols
-            .iter_mut()
-            .zip(sol.columns())
-            .filter_map(process)
-            .collect::<Result<Vec<_>, _>>()?;
-        for (index, cells) in cols {
-            for (i, cell) in cells.iter().enumerate() {
-                if sol.set(i, index, *cell)? {
-                    progress = true;
+        for (mut line, cells) in stat.cols.drain(..).zip(sol.columns()) {
+            let mut cells = Cells(cells.to_vec());
+            let sender = self.sender.clone();
+
+            self.thread_pool.spawn_ok(async move {
+                let res = match line.solve(&mut cells) {
+                    Ok(progress) => Ok((progress, line, cells.0)),
+                    Err(e) => Err(e),
+                };
+                sender.send(res).unwrap();
+            });
+        }
+        for _ in 0..sol.width {
+            match self.receiver.recv().unwrap() {
+                Ok((line_progress, line, cells)) => {
+                    if line_progress {
+                        for (i, cell) in cells.into_iter().enumerate() {
+                            if sol.set(i, line.index, cell)? {
+                                progress = true;
+                            }
+                        }
+                    }
+                    stat.cols.push(line);
                 }
+                Err(e) => error = Some(e),
             }
+        }
+        stat.cols.sort_by_key(|l| l.index);
+        if let Some(e) = error {
+            return Err(e);
         }
 
         Ok(progress)

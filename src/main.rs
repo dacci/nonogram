@@ -21,7 +21,7 @@ fn main() -> Result<()> {
     let puzzle = Puzzle::from_reader(File::open(&args.path)?)?;
     puzzle.validate()?;
 
-    let mut solver = Solver::new();
+    let mut solver = Solver::new()?;
     if args.disable_dfs {
         solver.set_dfs(false);
     }
