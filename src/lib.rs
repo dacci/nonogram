@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::io;
 use std::num::ParseIntError;
 use std::ops::{Deref, DerefMut};
@@ -949,8 +950,8 @@ impl Solver {
         // ======================
         let rows = stat
             .rows
-            .iter_mut()
-            .zip(sol.rows())
+            .par_iter_mut()
+            .zip(sol.h_cells.par_chunks_exact(sol.width))
             .filter_map(process)
             .collect::<Result<Vec<_>, _>>()?;
         for (index, cells) in rows {
@@ -966,8 +967,8 @@ impl Solver {
         // =========================
         let cols = stat
             .cols
-            .iter_mut()
-            .zip(sol.columns())
+            .par_iter_mut()
+            .zip(sol.v_cells.par_chunks_exact(sol.height))
             .filter_map(process)
             .collect::<Result<Vec<_>, _>>()?;
         for (index, cells) in cols {
